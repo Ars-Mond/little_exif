@@ -652,6 +652,8 @@ build_tag_enum![
 
 	// Windows XP tags — UTF-16LE encoded, stored as BYTE (0x0001) in IFD0
 	(XPTitle,                     0x9c9b, UTF16,         None::<u32>,       true,      GENERIC),
+	(XPComment,                   0x9c9c, UTF16,         None::<u32>,       true,      GENERIC),
+	(XPAuthor,                    0x9c9d, UTF16,         None::<u32>,       true,      GENERIC),
 	(XPKeywords,                  0x9c9e, UTF16,         None::<u32>,       true,      GENERIC),
 	(XPSubject,                   0x9c9f, UTF16,         None::<u32>,       true,      GENERIC),
 
