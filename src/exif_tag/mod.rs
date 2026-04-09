@@ -63,6 +63,7 @@ macro_rules! build_tag_enum {
 			UnknownRATIONAL64S(	RATIONAL64S,    u16, ExifTagGroup),
 			UnknownFLOAT(       FLOAT,          u16, ExifTagGroup),
 			UnknownDOUBLE(      DOUBLE,         u16, ExifTagGroup),
+			UnknownUTF16(       UTF16,          u16, ExifTagGroup),
 		}
 
 		impl ExifTag
@@ -99,10 +100,11 @@ macro_rules! build_tag_enum {
 					ExifTag::UnknownRATIONAL64S(    _, tag, _) => tag,
 					ExifTag::UnknownFLOAT(          _, tag, _) => tag,
 					ExifTag::UnknownDOUBLE(         _, tag, _) => tag,
+					ExifTag::UnknownUTF16(          _, tag, _) => tag,
 				}
 			}
 
-			/// Gets the tag for a given hex value. 
+			/// Gets the tag for a given hex value.
 			/// The tag is initialized with new, empty data.
 			/// If the hex value is unknown, an error is returned.
 			/// 
@@ -200,6 +202,7 @@ macro_rules! build_tag_enum {
 							ExifTagFormat::RATIONAL64S => Ok(ExifTag::UnknownRATIONAL64S(<RATIONAL64S as U8conversion<RATIONAL64S>>::from_u8_vec(raw_data, endian), hex_value, *group)),
 							ExifTagFormat::FLOAT       => Ok(ExifTag::UnknownFLOAT(      <FLOAT       as U8conversion<FLOAT      >>::from_u8_vec(raw_data, endian), hex_value, *group)),
 							ExifTagFormat::DOUBLE      => Ok(ExifTag::UnknownDOUBLE(     <DOUBLE      as U8conversion<DOUBLE     >>::from_u8_vec(raw_data, endian), hex_value, *group)),
+							ExifTagFormat::UTF16       => Ok(ExifTag::UnknownUTF16(      <UTF16       as U8conversion<UTF16      >>::from_u8_vec(raw_data, endian), hex_value, *group)),
 						}
 					},
 				}
@@ -260,7 +263,8 @@ macro_rules! build_tag_enum {
 					ExifTag::UnknownINT32S(         _, _, _) |
 					ExifTag::UnknownRATIONAL64S(    _, _, _) |
 					ExifTag::UnknownFLOAT(          _, _, _) |
-					ExifTag::UnknownDOUBLE(         _, _, _) => true,
+					ExifTag::UnknownDOUBLE(         _, _, _) |
+					ExifTag::UnknownUTF16(          _, _, _) => true,
 					_                                        => false
 				}
 			}
@@ -318,6 +322,7 @@ macro_rules! build_tag_enum {
 					ExifTag::UnknownRATIONAL64S(    _, _, group) => group,
 					ExifTag::UnknownFLOAT(          _, _, group) => group,
 					ExifTag::UnknownDOUBLE(         _, _, group) => group,
+					ExifTag::UnknownUTF16(          _, _, group) => group,
 				}
 			}
 
@@ -353,6 +358,7 @@ macro_rules! build_tag_enum {
 					ExifTag::UnknownRATIONAL64S(    _, _, _) => ExifTagFormat::RATIONAL64S,
 					ExifTag::UnknownFLOAT(          _, _, _) => ExifTagFormat::FLOAT,
 					ExifTag::UnknownDOUBLE(         _, _, _) => ExifTagFormat::DOUBLE,
+					ExifTag::UnknownUTF16(          _, _, _) => ExifTagFormat::UTF16,
 				}
 			}
 
@@ -418,6 +424,8 @@ macro_rules! build_tag_enum {
 					ExifTag::UnknownRATIONAL64S(    value, _, _) => value.len() as u32,
 					ExifTag::UnknownFLOAT(          value, _, _) => value.len() as u32,
 					ExifTag::UnknownDOUBLE(         value, _, _) => value.len() as u32,
+					// UTF16::len() already includes the two-byte null terminator
+					ExifTag::UnknownUTF16(          value, _, _) => value.len() as u32,
 				}
 			}
 
@@ -475,6 +483,7 @@ macro_rules! build_tag_enum {
 					ExifTag::UnknownRATIONAL64S(    value, _, _) => value.to_u8_vec(endian),
 					ExifTag::UnknownFLOAT(          value, _, _) => value.to_u8_vec(endian),
 					ExifTag::UnknownDOUBLE(         value, _, _) => value.to_u8_vec(endian),
+					ExifTag::UnknownUTF16(          value, _, _) => value.to_u8_vec(endian),
 				}
 			}
 
@@ -640,6 +649,11 @@ build_tag_enum![
 	(WaterDepth,                  0x9403, RATIONAL64S,   Some::<u32>(1),    true,      EXIF),
 	(Acceleration,                0x9404, RATIONAL64U,   Some::<u32>(1),    true,      EXIF),
 	(CameraElevationAngle,        0x9405, RATIONAL64S,   Some::<u32>(1),    true,      EXIF),
+
+	// Windows XP tags — UTF-16LE encoded, stored as BYTE (0x0001) in IFD0
+	(XPTitle,                     0x9c9b, UTF16,         None::<u32>,       true,      GENERIC),
+	(XPKeywords,                  0x9c9e, UTF16,         None::<u32>,       true,      GENERIC),
+	(XPSubject,                   0x9c9f, UTF16,         None::<u32>,       true,      GENERIC),
 
 	(FlashpixVersion,             0xa000, UNDEF,         Some::<u32>(4),    true,      EXIF),
 	(ColorSpace,                  0xa001, INT16U,        Some::<u32>(1),    true,      EXIF),

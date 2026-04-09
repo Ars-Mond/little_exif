@@ -76,7 +76,7 @@ ImageFileDirectory
     {
         ImageFileDirectory 
         { 
-            tags:                      tags, 
+            tags:                      tags,
             ifd_type:                  group, 
             belongs_to_generic_ifd_nr: nr 
         }

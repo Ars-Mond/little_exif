@@ -5,6 +5,7 @@ use std::io;
 use paste::paste;
 
 use crate::endian::Endian;
+use crate::exif_tag_format::Utf16String;
 use crate::rational::*;
 
 pub trait
@@ -167,6 +168,53 @@ impl U8conversion<String> for String
 
         Ok(result)
     }
+}
+
+impl U8conversion<Utf16String> for Utf16String
+{
+	fn
+	to_u8_vec
+	(
+		&self,
+		_endian: &Endian
+	)
+	-> Vec<u8>
+	{
+		// Always encode as UTF-16LE regardless of file endianness,
+		// as mandated by the Windows XP EXIF tag specification.
+		let mut bytes: Vec<u8> = self.0
+			.encode_utf16()
+			.flat_map(|c| c.to_le_bytes())
+			.collect();
+		bytes.push(0x00);
+		bytes.push(0x00);
+		bytes
+	}
+
+	fn
+	from_u8_vec_res
+	(
+		u8_vec: &[u8],
+		_endian: &Endian
+	)
+	-> Result<Utf16String, io::Error>
+	{
+		// Treat every pair of bytes as a little-endian UTF-16 code unit.
+		// Odd-length data is silently truncated (last byte ignored).
+		let u16_vec: Vec<u16> = u8_vec
+			.chunks_exact(2)
+			.map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+			.take_while(|&c| c != 0)
+			.collect();
+
+		let s = String::from_utf16(&u16_vec)
+			.map_err(|_| io::Error::new(
+				io::ErrorKind::InvalidData,
+				"from_u8_vec_res (Utf16String): invalid UTF-16 data"
+			))?;
+
+		Ok(Utf16String(s))
+	}
 }
 
 impl U8conversion<uR64> for uR64

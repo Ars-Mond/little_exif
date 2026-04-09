@@ -16,6 +16,42 @@ pub type RATIONAL64S    = Vec<iR64>;
 pub type FLOAT          = Vec<f32>;
 pub type DOUBLE         = Vec<f64>;
 
+/// A UTF-16LE encoded string. Used for Windows XP tags (XPTitle, XPKeywords,
+/// XPSubject) and the `UnknownUTF16` variant. The inner `String` is always
+/// stored as UTF-8 in memory; encoding/decoding to/from UTF-16LE bytes is
+/// handled by the `U8conversion` implementation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Utf16String(pub String);
+
+pub type UTF16 = Utf16String;
+
+impl Utf16String
+{
+	pub fn new() -> Self { Utf16String(String::new()) }
+
+	/// Returns the byte length of the full UTF-16LE encoding, **including**
+	/// the two-byte null terminator. This is used as the EXIF component count.
+	pub fn len(&self) -> usize
+	{
+		(self.0.encode_utf16().count() + 1) * 2
+	}
+}
+
+impl Default for Utf16String
+{
+	fn default() -> Self { Utf16String::new() }
+}
+
+impl From<String> for Utf16String
+{
+	fn from(s: String) -> Self { Utf16String(s) }
+}
+
+impl From<&str> for Utf16String
+{
+	fn from(s: &str) -> Self { Utf16String(s.to_owned()) }
+}
+
 #[derive(Clone, Debug, PartialEq, Copy)]
 pub enum
 ExifTagFormat
@@ -31,7 +67,8 @@ ExifTagFormat
 	INT32S,         // signed long          int32s
 	RATIONAL64S,    // signed rational      rational64s
 	FLOAT,          // single float         float
-	DOUBLE          // double float         double
+	DOUBLE,         // double float         double
+	UTF16,          // utf-16le string, stored as BYTE (0x0001) in EXIF files
 }
 
 impl 
@@ -59,6 +96,8 @@ ExifTagFormat
 			ExifTagFormat::RATIONAL64S  => 0x000a,
 			ExifTagFormat::FLOAT        => 0x000b,
 			ExifTagFormat::DOUBLE       => 0x000c,
+			// UTF-16LE strings are stored as BYTE in EXIF files
+			ExifTagFormat::UTF16        => 0x0001,
 		}
 	}
 
@@ -95,21 +134,21 @@ ExifTagFormat
 	)
 	-> u32
 	{
-		match self.as_u16()
+		match self
 		{
-			0x0001  => 1,
-			0x0002  => 1,
-			0x0003  => 2,
-			0x0004  => 4,
-			0x0005  => 8,
-			0x0006  => 1,
-			0x0007  => 1,
-			0x0008  => 2,
-			0x0009  => 4,
-			0x000a  => 8,
-			0x000b  => 4,
-			0x000c  => 8,
-			_       => panic!("Invalid format value for ExifTagFormat!"),
+			ExifTagFormat::INT8U        => 1,
+			ExifTagFormat::STRING       => 1,
+			ExifTagFormat::INT16U       => 2,
+			ExifTagFormat::INT32U       => 4,
+			ExifTagFormat::RATIONAL64U  => 8,
+			ExifTagFormat::INT8S        => 1,
+			ExifTagFormat::UNDEF        => 1,
+			ExifTagFormat::INT16S       => 2,
+			ExifTagFormat::INT32S       => 4,
+			ExifTagFormat::RATIONAL64S  => 8,
+			ExifTagFormat::FLOAT        => 4,
+			ExifTagFormat::DOUBLE       => 8,
+			ExifTagFormat::UTF16        => 1,
 		}
 	}
 }
