@@ -509,9 +509,11 @@ file_write_metadata
     // specific encoding, so we pass only the generally encoded metadata here
     write_metadata(&mut file_buffer, metadata)?;
 
-    // Seek back to start & write the file
+    // Seek back to start, write the file and adjust its length, possibly
+    // truncating the file if new contents are shorter
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&file_buffer)?;
+    file.set_len(file_buffer.len() as u64)?;
 
     return Ok(());
 }
