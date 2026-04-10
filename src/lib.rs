@@ -51,6 +51,7 @@ mod xmp;
 mod util;
 
 pub mod endian;
+pub mod iptc;
 pub mod rational;
 pub mod u8conversion;
 pub mod exif_tag;

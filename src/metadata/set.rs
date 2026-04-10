@@ -3,11 +3,33 @@
 
 use crate::exif_tag::ExifTag;
 use crate::ifd::ExifTagGroup;
+use crate::iptc::IptcData;
 use super::Metadata;
 
 impl
 Metadata
 {
+	/// Sets the IPTC data in the metadata struct, replacing any existing data.
+	pub fn
+	set_iptc
+	(
+		&mut self,
+		iptc: IptcData
+	)
+	{
+		self.iptc_data = Some(iptc);
+	}
+
+	/// Clears any IPTC data stored in the metadata struct.
+	pub fn
+	clear_iptc
+	(
+		&mut self
+	)
+	{
+		self.iptc_data = None;
+	}
+
 	/// Sets the tag in the metadata struct. Tries to determine what IFD the 
 	/// tag belongs to and should be inserted into, starting with IFD0.
 	/// If the tag should e.g. be inserted into IFD0's EXIF SubIFD and that does

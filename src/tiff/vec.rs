@@ -3,6 +3,8 @@
 
 use std::io::Cursor;
 
+use crate::exif_tag::ExifTag;
+use crate::ifd::ExifTagGroup;
 use crate::metadata::Metadata;
 
 use super::generic_read_metadata;
@@ -51,5 +53,16 @@ write_metadata
 -> Result<(), std::io::Error>
 {
 	let mut cursor = Cursor::new(file_buffer);
+
+	// If IPTC data is present, inject it as tag 0x83BB before encoding
+	if let Some(iptc_data) = metadata.get_iptc()
+	{
+		let raw_iptc = iptc_data.encode();
+		let mut m    = metadata.clone();
+		m.get_ifd_mut(ExifTagGroup::GENERIC, 0)
+			.set_tag(ExifTag::UnknownUNDEF(raw_iptc, 0x83BB, ExifTagGroup::GENERIC));
+		return generic_write_metadata(&mut cursor, &m);
+	}
+
 	return generic_write_metadata(&mut cursor, metadata);
 }

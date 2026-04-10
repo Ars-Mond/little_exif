@@ -6,12 +6,38 @@ use std::io::Read;
 use std::io::Write;
 
 use crate::general_file_io::EXIF_HEADER;
-use crate::io_error;
-use crate::metadata::Metadata;
+use crate::ifd::ExifTagGroup;
 use crate::ifd::ExifTagGroup::*;
+use crate::io_error;
+use crate::iptc::IptcData;
+use crate::metadata::Metadata;
 
 pub mod file;
 pub mod vec;
+
+/// Extracts IPTC data from a TIFF `Metadata` struct by looking for tag 0x83BB
+/// in IFD0. If found, the raw bytes are parsed as IPTC-IIM and the tag is
+/// removed from the IFD to avoid double-encoding on next write.
+pub(crate) fn
+extract_iptc_from_metadata
+(
+    metadata: &mut Metadata
+)
+-> Option<IptcData>
+{
+    let endian = metadata.get_endian();
+
+    // Collect raw bytes while metadata is borrowed immutably
+    let raw_bytes = metadata
+        .get_tag_by_hex(0x83BB, Some(ExifTagGroup::GENERIC))
+        .next()
+        .map(|tag| tag.value_as_u8_vec(&endian))?;
+
+    // Remove tag so it is not double-encoded on next write
+    metadata.get_ifd_mut(ExifTagGroup::GENERIC, 0).remove_tag(0x83BB);
+
+    IptcData::decode(&raw_bytes).ok()
+}
 
 pub(crate) fn
 generic_write_metadata

@@ -11,14 +11,19 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::endian::Endian;
+use crate::iptc::IptcData;
 use crate::metadata::Metadata;
 use crate::u8conversion::*;
 use crate::general_file_io::*;
 
 pub(crate) const JPG_SIGNATURE: [u8; 2] = [0xff, 0xd8];
 
-const JPG_MARKER_PREFIX: u8  = 0xff;
-const JPG_APP1_MARKER:   u16 = 0xffe1;
+const JPG_MARKER_PREFIX:  u8    = 0xff;
+const JPG_APP1_MARKER:    u16   = 0xffe1;
+const APP13_MARKER:       u16   = 0xffed;
+const PHOTOSHOP_HEADER:   &[u8] = b"Photoshop 3.0\0";
+const BIMM_MARKER:        [u8; 4] = [0x38, 0x42, 0x49, 0x4D];
+const IPTC_RESOURCE_TYPE: [u8; 2] = [0x04, 0x04];
 
 
 
@@ -277,6 +282,217 @@ file_clear_metadata
 }
 
 
+/// Parses 8BIM blocks from Photoshop APP13 data and returns IPTC content
+/// if resource type 0x0404 (IPTC-NAA) is found.
+fn
+parse_8bim_for_iptc
+(
+    data: &[u8]
+)
+-> Result<Option<IptcData>, std::io::Error>
+{
+    let mut pos = 0usize;
+
+    while pos + 8 <= data.len()
+    {
+        // Each block must start with "8BIM"
+        if data[pos..pos+4] != BIMM_MARKER
+        {
+            break;
+        }
+        pos += 4;
+
+        // Resource type (2 bytes)
+        let resource_type = [data[pos], data[pos + 1]];
+        pos += 2;
+
+        // Skip pascal string: 1-byte length + N-byte name, padded to even total
+        if pos >= data.len() { break; }
+        let name_len  = data[pos] as usize;
+        pos          += 1;
+        pos          += name_len;
+        if (1 + name_len) % 2 != 0 { pos += 1; }
+
+        // Resource data length (4 bytes BE)
+        if pos + 4 > data.len() { break; }
+        let res_data_len = u32::from_be_bytes(
+            [data[pos], data[pos+1], data[pos+2], data[pos+3]]
+        ) as usize;
+        pos += 4;
+
+        if pos + res_data_len > data.len() { break; }
+        let res_data = &data[pos..pos + res_data_len];
+        pos += res_data_len;
+        // Pad resource data to even boundary
+        if res_data_len % 2 != 0 { pos += 1; }
+
+        if resource_type == IPTC_RESOURCE_TYPE
+        {
+            return Ok(Some(IptcData::decode(res_data)?));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Scans a JPEG byte stream for an APP13 segment containing Photoshop IPTC data.
+/// Assumes the cursor is positioned just after the 2-byte JPEG signature.
+fn
+generic_read_iptc
+<T: Seek + Read>
+(
+    cursor: &mut T
+)
+-> Result<Option<IptcData>, std::io::Error>
+{
+    let mut byte_buffer                  = [0u8; 1];
+    let mut previous_byte_was_marker_prefix = false;
+
+    loop
+    {
+        match cursor.read_exact(&mut byte_buffer)
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e),
+            Ok(_)  => {},
+        }
+
+        if previous_byte_was_marker_prefix
+        {
+            match byte_buffer[0]
+            {
+                0xd9 => return Ok(None), // EOI — no IPTC found
+
+                // RST markers (D0-D7) have no length field; skip them
+                0xd0 | 0xd1 | 0xd2 | 0xd3 |
+                0xd4 | 0xd5 | 0xd6 | 0xd7 => {
+                    previous_byte_was_marker_prefix = false;
+                    continue;
+                }
+
+                // Stuffed 0xFF — not a real marker
+                0x00 => {
+                    previous_byte_was_marker_prefix = false;
+                    continue;
+                }
+
+                marker => {
+                    let mut length_buffer = [0u8; 2];
+                    cursor.read_exact(&mut length_buffer)?;
+                    let length = u16::from_be_bytes(length_buffer) as usize;
+                    if length < 2
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Mangled JPG data encountered!"
+                        ));
+                    }
+                    let remaining_length = length - 2;
+
+                    match marker
+                    {
+                        0xed => {
+                            // APP13 — read full segment and check for Photoshop IPTC
+                            let mut segment_data = vec![0u8; remaining_length];
+                            cursor.read_exact(&mut segment_data)?;
+
+                            if segment_data.starts_with(PHOTOSHOP_HEADER)
+                            {
+                                let after_header = &segment_data[PHOTOSHOP_HEADER.len()..];
+                                if let Some(iptc) = parse_8bim_for_iptc(after_header)?
+                                {
+                                    return Ok(Some(iptc));
+                                }
+                            }
+                        }
+
+                        0xda => {
+                            // SOS — skip segment then skip entropy-coded data
+                            cursor.seek(SeekFrom::Current(remaining_length as i64))?;
+                            match skip_ecs(cursor)
+                            {
+                                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof
+                                    => return Ok(None),
+                                Err(e) => return Err(e),
+                                Ok(_)  => {},
+                            }
+                        }
+
+                        _ => {
+                            cursor.seek(SeekFrom::Current(remaining_length as i64))?;
+                        }
+                    }
+
+                    previous_byte_was_marker_prefix = false;
+                }
+            }
+        }
+        else
+        {
+            previous_byte_was_marker_prefix = byte_buffer[0] == JPG_MARKER_PREFIX;
+        }
+    }
+}
+
+/// Reads IPTC data from a JPEG file buffer.
+/// Returns `Ok(None)` if no IPTC APP13 block is present.
+pub(crate) fn
+read_iptc_from_buffer
+(
+    file_buffer: &[u8]
+)
+-> Result<Option<IptcData>, std::io::Error>
+{
+    check_signature(file_buffer)?;
+    let mut cursor = Cursor::new(file_buffer);
+    cursor.set_position(2); // skip JPEG signature
+    generic_read_iptc(&mut cursor)
+}
+
+/// Reads IPTC data from a JPEG file at the given path.
+/// Returns `Ok(None)` if no IPTC APP13 block is present.
+pub(crate) fn
+file_read_iptc
+(
+    path: &Path
+)
+-> Result<Option<IptcData>, std::io::Error>
+{
+    let mut buffered = BufReader::new(file_check_signature(path)?);
+    generic_read_iptc(&mut buffered)
+}
+
+/// Encodes IPTC data into a complete JPEG APP13 segment
+/// (Photoshop 3.0 header + 8BIM resource type 0x0404 wrapper).
+fn
+encode_iptc_app13
+(
+    iptc_data: &IptcData
+)
+-> Vec<u8>
+{
+    let raw_iptc  = iptc_data.encode();
+    let res_len   = raw_iptc.len() as u32;
+    let seg_len   = 2u16                            // length field itself
+        + PHOTOSHOP_HEADER.len()   as u16           // "Photoshop 3.0\0"
+        + BIMM_MARKER.len()        as u16           // "8BIM"
+        + IPTC_RESOURCE_TYPE.len() as u16           // 0x04 0x04
+        + 2                                         // empty pascal string
+        + 4                                         // u32 resource data length
+        + raw_iptc.len()           as u16;          // IPTC payload
+
+    let mut out = Vec::new();
+    out.extend(to_u8_vec_macro!(u16, &APP13_MARKER, &Endian::Big));
+    out.extend(to_u8_vec_macro!(u16, &seg_len,      &Endian::Big));
+    out.extend_from_slice(PHOTOSHOP_HEADER);
+    out.extend_from_slice(&BIMM_MARKER);
+    out.extend_from_slice(&IPTC_RESOURCE_TYPE);
+    out.extend_from_slice(&[0x00u8, 0x00u8]); // empty pascal string
+    out.extend(to_u8_vec_macro!(u32, &res_len, &Endian::Big));
+    out.extend_from_slice(&raw_iptc);
+    out
+}
+
 /// Provides the JPEG specific encoding result as vector of bytes to be used
 /// by the user (e.g. in combination with another library)
 pub(crate) fn
@@ -299,14 +515,23 @@ write_metadata
 )
 -> Result<(), std::io::Error>
 {
-    // Remove old metadata
+    // Remove old EXIF (APP1)
     clear_metadata(file_buffer)?;
 
-    // Encode the data specifically for JPG
-    let mut encoded_metadata = encode_metadata_jpg(&metadata.encode()?);
+    // Remove old IPTC (APP13)
+    clear_segment(file_buffer, 0xed, None)?;
 
-    // Insert the metadata right after the signature
+    // Encode and insert new EXIF (APP1) right after the JPEG signature
+    let mut encoded_metadata = encode_metadata_jpg(&metadata.encode()?);
+    let     exif_size        = encoded_metadata.len();
     crate::util::insert_multiple_at(file_buffer, 2, &mut encoded_metadata);
+
+    // Encode and insert new IPTC (APP13) right after APP1
+    if let Some(iptc_data) = metadata.get_iptc()
+    {
+        let mut encoded_iptc = encode_iptc_app13(iptc_data);
+        crate::util::insert_multiple_at(file_buffer, 2 + exif_size, &mut encoded_iptc);
+    }
 
     return Ok(());
 }

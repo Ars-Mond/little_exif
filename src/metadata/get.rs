@@ -3,6 +3,7 @@
 
 use crate::exif_tag::ExifTag;
 use crate::ifd::ExifTagGroup;
+use crate::iptc::IptcData;
 
 use super::Endian;
 use super::ImageFileDirectory;
@@ -29,6 +30,28 @@ Metadata
     -> Endian
     {
         self.endian.clone()
+    }
+
+    /// Gets a reference to the IPTC data stored in the struct, if any
+    pub fn
+    get_iptc
+    (
+        &self
+    )
+    -> Option<&IptcData>
+    {
+        self.iptc_data.as_ref()
+    }
+
+    /// Gets a mutable reference to the IPTC data stored in the struct, if any
+    pub fn
+    get_iptc_mut
+    (
+        &mut self
+    )
+    -> Option<&mut IptcData>
+    {
+        self.iptc_data.as_mut()
     }
 
     /// Gets the image file directories stored in the struct

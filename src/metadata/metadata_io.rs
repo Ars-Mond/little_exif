@@ -85,7 +85,31 @@ Metadata
                 ),
         };
 
-        return Self::general_decoding_wrapper(raw_pre_decode_general);
+        let mut metadata = Self::general_decoding_wrapper(raw_pre_decode_general)?;
+
+        // Read IPTC data separately (format-specific extraction)
+        match file_type
+        {
+            FileExtension::JPEG =>
+            {
+                match jpg::read_iptc_from_buffer(file_buffer)
+                {
+                    Ok(Some(iptc)) => metadata.set_iptc(iptc),
+                    Ok(None)       => {},
+                    Err(e)         => log::warn!("Could not read IPTC from JPEG: {e}"),
+                }
+            }
+            FileExtension::TIFF =>
+            {
+                if let Some(iptc) = tiff::extract_iptc_from_metadata(&mut metadata)
+                {
+                    metadata.set_iptc(iptc);
+                }
+            }
+            _ => {}
+        }
+
+        return Ok(metadata);
     }
 
     /// Constructs a new `Metadata` object with the metadata from the image at the specified path.
@@ -180,7 +204,31 @@ Metadata
                 ),
         };
 
-        return Self::general_decoding_wrapper(raw_pre_decode_general);
+        let mut metadata = Self::general_decoding_wrapper(raw_pre_decode_general)?;
+
+        // Read IPTC data separately (format-specific extraction)
+        match file_type
+        {
+            FileExtension::JPEG =>
+            {
+                match jpg::file_read_iptc(path)
+                {
+                    Ok(Some(iptc)) => metadata.set_iptc(iptc),
+                    Ok(None)       => {},
+                    Err(e)         => log::warn!("Could not read IPTC from JPEG: {e}"),
+                }
+            }
+            FileExtension::TIFF =>
+            {
+                if let Some(iptc) = tiff::extract_iptc_from_metadata(&mut metadata)
+                {
+                    metadata.set_iptc(iptc);
+                }
+            }
+            _ => {}
+        }
+
+        return Ok(metadata);
     }
 
     #[allow(unreachable_patterns)]
@@ -418,6 +466,19 @@ Metadata
     )
     -> Result<(), std::io::Error>
     {
+        // IPTC write is only supported for JPEG and TIFF
+        if self.get_iptc().is_some()
+        {
+            match file_type
+            {
+                FileExtension::JPEG | FileExtension::TIFF => {},
+                _ => return io_error!(
+                    Other,
+                    format!("IPTC write not supported for {:?}", file_type)
+                ),
+            }
+        }
+
         match file_type
         {
             FileExtension::HEIF
@@ -458,6 +519,19 @@ Metadata
     -> Result<(), std::io::Error>
     {
         let file_type = get_file_type(path)?;
+
+        // IPTC write is only supported for JPEG and TIFF
+        if self.get_iptc().is_some()
+        {
+            match file_type
+            {
+                FileExtension::JPEG | FileExtension::TIFF => {},
+                _ => return io_error!(
+                    Other,
+                    format!("IPTC write not supported for {:?}", file_type)
+                ),
+            }
+        }
 
         match file_type
         {
