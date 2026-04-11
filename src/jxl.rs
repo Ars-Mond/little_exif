@@ -10,11 +10,34 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::endian::Endian;
+use crate::io_error_plain;
 use crate::metadata::Metadata;
 use crate::u8conversion::*;
 use crate::general_file_io::*;
 use crate::util::insert_multiple_at;
 use crate::util::range_remove;
+
+/// Wraps a `Vec<u8>` and returns an error once writing would exceed `limit`.
+struct LimitedWriter {
+    data:  Vec<u8>,
+    limit: usize,
+}
+
+impl LimitedWriter {
+    fn new(limit: usize) -> Self { Self { data: Vec::new(), limit } }
+}
+
+impl std::io::Write for LimitedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.data.len().saturating_add(buf.len()) > self.limit {
+            return Err(io_error_plain!(Other,
+                "Decompressed JXL EXIF data exceeds size limit (possible decompression bomb)"));
+        }
+        self.data.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
 
 pub(crate) const JXL_SIGNATURE:          [u8; 2]  = [0xff, 0x0a];
 pub(crate) const ISO_BMFF_JXL_SIGNATURE: [u8; 12] = [
@@ -334,7 +357,12 @@ generic_read_metadata
                 cursor.seek(SeekFrom::Current(4))?;
 
                 // `length-4` because of the previous relative seek operation
-                let mut exif_buffer = vec![0u8; (length-4) as usize];
+                let exif_len = (length - 4) as usize;
+                if exif_len > MAX_ALLOCATION_SIZE
+                {
+                    return io_error!(Other, format!("JXL EXIF box too large ({exif_len} bytes); possible OOM attack"));
+                }
+                let mut exif_buffer = vec![0u8; exif_len];
                 cursor.read_exact(&mut exif_buffer)?;
 
                 return Ok(exif_buffer);
@@ -349,26 +377,28 @@ generic_read_metadata
                     // Skip the next 4 bytes (which contain the minor version???)
                     cursor.seek(SeekFrom::Current(4))?;
 
-                    let mut compressed_exif_buffer = vec![
-                        0u8; 
-                        (length-4) as usize
-                    ];
+                    let compressed_len = (length - 4) as usize;
+                    if compressed_len > MAX_ALLOCATION_SIZE
+                    {
+                        return io_error!(Other, format!("JXL Brotli box too large ({compressed_len} bytes); possible OOM attack"));
+                    }
+                    let mut compressed_exif_buffer = vec![0u8; compressed_len];
                     cursor.read_exact(&mut compressed_exif_buffer)?;
-                    
-                    let mut decompressed_exif_buffer = Vec::new();
+
+                    let mut writer = LimitedWriter::new(MAX_ALLOCATION_SIZE);
 
                     match brotli::BrotliDecompress(
-                        &mut Cursor::new(compressed_exif_buffer), 
-                        &mut decompressed_exif_buffer
-                    ) 
+                        &mut Cursor::new(compressed_exif_buffer),
+                        &mut writer
+                    )
                     {
                         Ok(_)  => (),
                         Err(e) => return Err(e)
                     };
 
-                    // Ignore the next 4 bytes (I guess for the same reason 
+                    // Ignore the next 4 bytes (I guess for the same reason
                     // as above - some sort of minor version?)
-                    return Ok(decompressed_exif_buffer[4..].to_vec());
+                    return Ok(writer.data[4..].to_vec());
                 }
                 else 
                 {

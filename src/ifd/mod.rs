@@ -15,6 +15,7 @@ use crate::exif_tag::ExifTag;
 use crate::exif_tag::TagType;
 use crate::exif_tag_format::ExifTagFormat;
 use crate::general_file_io::io_error;
+use crate::general_file_io::MAX_ALLOCATION_SIZE;
 use crate::metadata::Metadata;
 use crate::u8conversion::from_u8_vec_res_macro;
 use crate::u8conversion::to_u8_vec_macro;
@@ -203,6 +204,10 @@ ImageFileDirectory
                 data_cursor.seek(std::io::SeekFrom::Current(hex_offset as i64))?;
 
                 // Read the raw data
+                if byte_count as usize > MAX_ALLOCATION_SIZE
+                {
+                    return io_error!(Other, format!("IFD tag data too large ({byte_count} bytes); possible OOM attack"));
+                }
                 let mut raw_data_buffer = vec![0u8; byte_count as usize];
                 data_cursor.read_exact(&mut raw_data_buffer)?;
                 raw_data = raw_data_buffer.to_vec();

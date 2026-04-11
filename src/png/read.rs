@@ -5,6 +5,7 @@ use std::io::Read;
 use std::io::Seek;
 
 use crate::general_file_io::io_error;
+use crate::general_file_io::MAX_ALLOCATION_SIZE;
 use crate::util::read_4_bytes;
 use crate::util::read_be_u32;
 
@@ -50,6 +51,10 @@ read_chunk_data
 )
 -> Result<Vec<u8>, std::io::Error>
 {
+    if chunk_length > MAX_ALLOCATION_SIZE
+    {
+        return io_error!(Other, format!("PNG chunk too large ({chunk_length} bytes); possible OOM attack"));
+    }
     let mut chunk_data_buffer = vec![0u8; chunk_length];
     let     bytes_read        = cursor.read(&mut chunk_data_buffer)?;
     
