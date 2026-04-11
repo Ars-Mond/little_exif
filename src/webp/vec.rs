@@ -448,23 +448,15 @@ get_dimension_info_from_vp8l_chunk
     // See: https://developers.google.com/speed/webp/docs/webp_lossless_bitstream_specification#3_riff_header
     let width_height_info_buffer = payload[1..5].to_vec();
     
-    // Convert to a single u32 number for bit-mask operations
+    // VP8L bitstream is LSB-first.
+    // Bits  0..13: width  - 1
+    // Bits 14..27: height - 1
+    // See: https://developers.google.com/speed/webp/docs/webp_lossless_bitstream_specification#3_riff_header
     let width_height_info = from_u8_vec_res_macro!(u32, &width_height_info_buffer, &Endian::Little)?;
-    
-    let mut width  = 0;
-    let mut height = 0;
 
-    // Get the first 14 bit to construct the width
-    for bit_index in 0..14
-    {
-        width  |= ((width_height_info >> (27 - bit_index)) & 0x01) << (13 - (bit_index % 14));
-    }
-
-    // Get the next 14 bit to construct the height
-    for bit_index in 14..28
-    {
-        height |= ((width_height_info >> (27 - bit_index)) & 0x01) << (13 - (bit_index % 14));
-    }
+    // VP8L stores (width - 1) and (height - 1), matching the VP8X format.
+    let width  =  width_height_info        & 0x3FFF;
+    let height = (width_height_info >> 14) & 0x3FFF;
 
     return Ok((width, height));
 }
