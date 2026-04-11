@@ -380,14 +380,20 @@ update_file_size_information
     let old_file_size = from_u8_vec_res_macro!(u32, &file_size_buffer, &Endian::Little)?;
 
     // ...adding the delta byte count (and performing some checks)...
-    if delta < 0
+    if delta < 0 && old_file_size as i32 <= delta
     {
-        assert!(old_file_size as i32 > delta);
+        return io_error!(Other, format!("WebP file size underflow: old={old_file_size}, delta={delta}"));
     }
     let new_file_size = (old_file_size as i32 + delta) as u32;
 
-    assert!(old_file_size % 2 == 0);
-    assert!(new_file_size % 2 == 0);
+    if old_file_size % 2 != 0
+    {
+        return io_error!(Other, format!("WebP RIFF size is not even: {old_file_size}"));
+    }
+    if new_file_size % 2 != 0
+    {
+        return io_error!(Other, format!("WebP RIFF size would become odd after update: {new_file_size}"));
+    }
 
     // ...and writing back to file...
     file.seek(SeekFrom::Start(4))?;

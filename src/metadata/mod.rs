@@ -192,7 +192,10 @@ Metadata
                 ifd.get_ifd_type()       == ExifTagGroup::GENERIC
             ).collect::<Vec<&ImageFileDirectory>>();
 
-            assert!(filter_result.len() <= 1);
+            if filter_result.len() > 1
+            {
+                return io_error!(Other, format!("Duplicate GENERIC IFD #{n} found during encoding"));
+            }
 
             let Some(last_ifd) = filter_result.last() else { continue; };
 
@@ -229,21 +232,25 @@ Metadata
             {
                 a.get_generic_ifd_nr().cmp(&b.get_generic_ifd_nr())
             }
+            else if a.get_ifd_type() == b.get_ifd_type()
+            {
+                std::cmp::Ordering::Equal
+            }
+            else if a.get_ifd_type() < b.get_ifd_type()
+            {
+                std::cmp::Ordering::Less
+            }
             else
             {
-                if a.get_ifd_type() == b.get_ifd_type()
-                {
-                    panic!("Should not have two different IFDs with same group & number!");
-                }
-                if a.get_ifd_type() < b.get_ifd_type()
-                {
-                    std::cmp::Ordering::Less
-                }
-                else
-                {
-                    std::cmp::Ordering::Greater
-                }
+                std::cmp::Ordering::Greater
             }
+        );
+
+        // Remove any duplicate IFDs (same group + number) that may have
+        // been introduced by malformed input or a logic error.
+        self.image_file_directories.dedup_by(|a, b|
+            a.get_ifd_type()       == b.get_ifd_type() &&
+            a.get_generic_ifd_nr() == b.get_generic_ifd_nr()
         );
     }
  
