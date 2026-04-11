@@ -18,7 +18,8 @@ fn main()
 
     if let Some(existing) = metadata.get_xmp()
     {
-        println!("Existing XMP ({} bytes)", existing.packet.len());
+        println!("Existing XMP ({} bytes):", existing.packet.len());
+        println!("{}", String::from_utf8_lossy(existing.as_bytes()));
         let exif_tags = existing.get_exif_tags(&Endian::Little);
         println!("  EXIF tags in XMP: {}", exif_tags.len());
         for tag in &exif_tags
