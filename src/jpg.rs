@@ -15,6 +15,7 @@ use crate::iptc::IptcData;
 use crate::metadata::Metadata;
 use crate::u8conversion::*;
 use crate::general_file_io::*;
+use crate::xmp::{XmpData, XMP_NAMESPACE_URI};
 
 pub(crate) const JPG_SIGNATURE: [u8; 2] = [0xff, 0xd8];
 
@@ -282,6 +283,160 @@ file_clear_metadata
 }
 
 
+/// Scans a JPEG byte stream for an APP1 segment containing XMP data.
+/// Assumes the cursor is positioned just after the 2-byte JPEG signature.
+fn
+generic_read_xmp
+<T: Seek + Read>
+(
+    cursor: &mut T
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    let mut byte_buffer                  = [0u8; 1];
+    let mut previous_byte_was_marker_prefix = false;
+
+    loop
+    {
+        match cursor.read_exact(&mut byte_buffer)
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e),
+            Ok(_)  => {},
+        }
+
+        if previous_byte_was_marker_prefix
+        {
+            match byte_buffer[0]
+            {
+                0xd9 => return Ok(None), // EOI
+
+                // RST markers — no length field
+                0xd0 | 0xd1 | 0xd2 | 0xd3 |
+                0xd4 | 0xd5 | 0xd6 | 0xd7 => {
+                    previous_byte_was_marker_prefix = false;
+                    continue;
+                }
+
+                // Stuffed 0xFF byte
+                0x00 => {
+                    previous_byte_was_marker_prefix = false;
+                    continue;
+                }
+
+                marker => {
+                    let mut length_buffer = [0u8; 2];
+                    cursor.read_exact(&mut length_buffer)?;
+                    let length = u16::from_be_bytes(length_buffer) as usize;
+                    if length < 2
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Mangled JPG data encountered!"
+                        ));
+                    }
+                    let remaining_length = length - 2;
+
+                    match marker
+                    {
+                        0xe1 => {
+                            // APP1 — check for XMP namespace prefix
+                            if remaining_length >= XMP_NAMESPACE_URI.len()
+                            {
+                                let mut prefix_buf = vec![0u8; XMP_NAMESPACE_URI.len()];
+                                cursor.read_exact(&mut prefix_buf)?;
+                                if prefix_buf == XMP_NAMESPACE_URI
+                                {
+                                    let xmp_len = remaining_length - XMP_NAMESPACE_URI.len();
+                                    let mut xmp_bytes = vec![0u8; xmp_len];
+                                    cursor.read_exact(&mut xmp_bytes)?;
+                                    return Ok(Some(XmpData::from_raw(xmp_bytes)));
+                                }
+                                // Not XMP — skip remaining bytes
+                                let skip = remaining_length - XMP_NAMESPACE_URI.len();
+                                cursor.seek(SeekFrom::Current(skip as i64))?;
+                            }
+                            else
+                            {
+                                cursor.seek(SeekFrom::Current(remaining_length as i64))?;
+                            }
+                        }
+
+                        0xda => {
+                            cursor.seek(SeekFrom::Current(remaining_length as i64))?;
+                            match skip_ecs(cursor)
+                            {
+                                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof
+                                    => return Ok(None),
+                                Err(e) => return Err(e),
+                                Ok(_)  => {},
+                            }
+                        }
+
+                        _ => {
+                            cursor.seek(SeekFrom::Current(remaining_length as i64))?;
+                        }
+                    }
+
+                    previous_byte_was_marker_prefix = false;
+                }
+            }
+        }
+        else
+        {
+            previous_byte_was_marker_prefix = byte_buffer[0] == JPG_MARKER_PREFIX;
+        }
+    }
+}
+
+/// Reads XMP data from a JPEG file buffer.
+/// Returns `Ok(None)` if no XMP APP1 block is present.
+pub(crate) fn
+read_xmp_from_buffer
+(
+    file_buffer: &[u8]
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    check_signature(file_buffer)?;
+    let mut cursor = Cursor::new(file_buffer);
+    cursor.set_position(2); // skip JPEG signature
+    generic_read_xmp(&mut cursor)
+}
+
+/// Reads XMP data from a JPEG file at the given path.
+/// Returns `Ok(None)` if no XMP APP1 block is present.
+pub(crate) fn
+file_read_xmp
+(
+    path: &Path
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    let mut buffered = BufReader::new(file_check_signature(path)?);
+    generic_read_xmp(&mut buffered)
+}
+
+/// Encodes XMP data into a complete JPEG APP1 segment with XMP namespace prefix.
+fn
+encode_xmp_app1
+(
+    xmp_data: &XmpData,
+)
+-> Vec<u8>
+{
+    let payload = xmp_data.as_bytes();
+    let seg_len = 2u16
+        + XMP_NAMESPACE_URI.len() as u16
+        + payload.len() as u16;
+    let mut out = Vec::new();
+    out.extend(to_u8_vec_macro!(u16, &JPG_APP1_MARKER, &Endian::Big));
+    out.extend(to_u8_vec_macro!(u16, &seg_len,          &Endian::Big));
+    out.extend_from_slice(XMP_NAMESPACE_URI);
+    out.extend_from_slice(payload);
+    out
+}
+
 /// Parses 8BIM blocks from Photoshop APP13 data and returns IPTC content
 /// if resource type 0x0404 (IPTC-NAA) is found.
 fn
@@ -515,11 +670,14 @@ write_metadata
 )
 -> Result<(), std::io::Error>
 {
-    // Remove old EXIF (APP1)
+    // Remove old EXIF (APP1 with EXIF header)
     clear_metadata(file_buffer)?;
 
     // Remove old IPTC (APP13)
     clear_segment(file_buffer, 0xed, None)?;
+
+    // Remove old XMP (APP1 with XMP namespace prefix)
+    clear_segment(file_buffer, 0xe1, Some(XMP_NAMESPACE_URI))?;
 
     // Encode and insert new EXIF (APP1) right after the JPEG signature
     let mut encoded_metadata = encode_metadata_jpg(&metadata.encode()?);
@@ -527,10 +685,19 @@ write_metadata
     crate::util::insert_multiple_at(file_buffer, 2, &mut encoded_metadata);
 
     // Encode and insert new IPTC (APP13) right after APP1
+    let mut iptc_size = 0usize;
     if let Some(iptc_data) = metadata.get_iptc()
     {
         let mut encoded_iptc = encode_iptc_app13(iptc_data);
+        iptc_size            = encoded_iptc.len();
         crate::util::insert_multiple_at(file_buffer, 2 + exif_size, &mut encoded_iptc);
+    }
+
+    // Encode and insert new XMP (APP1) right after IPTC (or EXIF if no IPTC)
+    if let Some(xmp_data) = metadata.get_xmp()
+    {
+        let mut encoded_xmp = encode_xmp_app1(xmp_data);
+        crate::util::insert_multiple_at(file_buffer, 2 + exif_size + iptc_size, &mut encoded_xmp);
     }
 
     return Ok(());
@@ -695,11 +862,15 @@ generic_read_metadata
             match byte_buffer[0]
             {
                 0xe1 => {                                                       // APP1 marker
-                    // Read in & return the remaining data
+                    // Read in the segment data
                     let mut app1_buffer = vec![0u8; remaining_length];
                     cursor.read_exact(&mut app1_buffer)?;
 
-                    return Ok(app1_buffer);
+                    // Only return EXIF APP1 segments (start with "Exif\0\0").
+                    // XMP and other APP1 segments must be skipped.
+                    if app1_buffer.starts_with(&EXIF_HEADER) {
+                        return Ok(app1_buffer);
+                    }
                 },
 
                 0xda => {                                                       // SOS marker

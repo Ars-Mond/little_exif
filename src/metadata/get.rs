@@ -4,6 +4,7 @@
 use crate::exif_tag::ExifTag;
 use crate::ifd::ExifTagGroup;
 use crate::iptc::IptcData;
+use crate::xmp::XmpData;
 
 use super::Endian;
 use super::ImageFileDirectory;
@@ -52,6 +53,28 @@ Metadata
     -> Option<&mut IptcData>
     {
         self.iptc_data.as_mut()
+    }
+
+    /// Gets a reference to the XMP data stored in the struct, if any
+    pub fn
+    get_xmp
+    (
+        &self
+    )
+    -> Option<&XmpData>
+    {
+        self.xmp_data.as_ref()
+    }
+
+    /// Gets a mutable reference to the XMP data stored in the struct, if any
+    pub fn
+    get_xmp_mut
+    (
+        &mut self
+    )
+    -> Option<&mut XmpData>
+    {
+        self.xmp_data.as_mut()
     }
 
     /// Gets the image file directories stored in the struct

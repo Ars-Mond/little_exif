@@ -10,10 +10,12 @@ pub(crate) const RIFF_SIGNATURE:       [u8; 4] = [0x52, 0x49, 0x46, 0x46];
 pub(crate) const WEBP_SIGNATURE:       [u8; 4] = [0x57, 0x45, 0x42, 0x50];
 pub(crate) const VP8X_HEADER:          &str    = "VP8X";
 pub(crate) const EXIF_CHUNK_HEADER:    &str    = "EXIF";
+pub(crate) const XMP_CHUNK_HEADER:     &str    = "XMP ";
 
 use std::fs::File;
 
 use crate::endian::Endian;
+use crate::xmp::XmpData;
 use crate::general_file_io::io_error;
 use crate::io_error_plain;
 use crate::u8conversion::from_u8_vec_res_macro;
@@ -129,6 +131,26 @@ encode_metadata_webp
 }
 
 
+
+/// Encodes XMP data into a WebP "XMP " RIFF chunk.
+pub(crate) fn
+encode_metadata_webp_xmp
+(
+    xmp_data: &XmpData,
+)
+-> Vec<u8>
+{
+    let data   = xmp_data.as_bytes();
+    let length = data.len() as u32;
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"XMP ");
+    out.extend(to_u8_vec_macro!(u32, &length, &Endian::Little));
+    out.extend_from_slice(data);
+    if length % 2 != 0 { out.push(0x00); }
+
+    out
+}
 
 /// Provides the WebP specific encoding result as vector of bytes to be used
 /// by the user (e.g. in combination with another library)

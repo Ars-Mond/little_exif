@@ -10,6 +10,7 @@ use crate::general_file_io::EXIF_HEADER;
 use crate::metadata::Metadata;
 use crate::util::insert_multiple_at;
 use crate::util::range_remove;
+use crate::xmp::XmpData;
 
 use super::riff_chunk::RiffChunk;
 use super::riff_chunk::RiffChunkDescriptor;
@@ -397,10 +398,10 @@ convert_to_extended_format
     let (width, height) = match first_chunk.descriptor().header().as_str()
     {
         "VP8 "
-            => {log::debug!("VP8 !"); io_error!(Other, "Conversion from Simple File Format with 'VP8' chunk to Extended File Format not yet implemented!") },
+            => get_dimension_info_from_vp8_chunk(first_chunk.payload()),
         "VP8L"
             => get_dimension_info_from_vp8l_chunk(first_chunk.payload()),
-        _ 
+        _
             => io_error!(Other, format!("Expected either 'VP8 ' or 'VP8L' chunk for conversion but got {:?}!", first_chunk.descriptor().header().as_str()))
     }?;
 
@@ -509,6 +510,214 @@ set_exif_flag
 
 
 
+/// Sets or clears the XMP flag (bit 4, 0x10) in the VP8X chunk flags byte.
+fn
+set_xmp_flag
+(
+    cursor:         &mut Cursor<&mut Vec<u8>>,
+    xmp_flag_value: bool
+)
+-> Result<(), std::io::Error>
+{
+    // Ensure there is a VP8X chunk; convert simple format if needed
+    let parsed_webp_result = parse_webp(cursor.get_ref())?;
+
+    if let Some(first_chunk) = parsed_webp_result.first()
+    {
+        if first_chunk.header().to_lowercase() != VP8X_HEADER.to_lowercase()
+        {
+            convert_to_extended_format(cursor)?;
+        }
+    }
+    else
+    {
+        return io_error!(Other, "Could not read first chunk descriptor of WebP file!");
+    }
+
+    // Byte 20 in the file is the first flags byte of the VP8X chunk
+    cursor.get_mut()[20] = if xmp_flag_value
+    {
+        cursor.get_ref()[20] | 0x10
+    }
+    else
+    {
+        cursor.get_ref()[20] & 0b11101111
+    };
+
+    Ok(())
+}
+
+
+
+/// Checks that the file has a VP8X chunk with the XMP flag (0x10) set.
+fn
+check_xmp_in_file
+(
+    file_buffer: &Vec<u8>
+)
+-> Result<(Cursor<&Vec<u8>>, Vec<RiffChunkDescriptor>), std::io::Error>
+{
+    let parsed_webp_result = parse_webp(file_buffer)?;
+
+    if let Some(first_chunk) = parsed_webp_result.first()
+    {
+        if first_chunk.header().to_lowercase() != VP8X_HEADER.to_lowercase()
+        {
+            return io_error!(
+                Other,
+                format!(
+                    "Expected first chunk of WebP file to be of type 'VP8X' but instead got {}!",
+                    first_chunk.header()
+                )
+            );
+        }
+    }
+    else
+    {
+        return io_error!(Other, "Could not read first chunk descriptor of WebP file!");
+    }
+
+    let mut cursor     = check_signature(file_buffer)?;
+    let mut flag_buffer = vec![0u8; 4usize];
+    cursor.set_position(12u64 + 4u64 + 4u64);
+    if cursor.read(&mut flag_buffer)? != 4
+    {
+        return io_error!(Other, "Could not read flags of VP8X chunk!");
+    }
+
+    if flag_buffer[0] & 0x10 != 0x10
+    {
+        return io_error!(Other, "No XMP chunk according to VP8X flags!");
+    }
+
+    return Ok((cursor, parsed_webp_result));
+}
+
+
+
+/// Reads XMP data from a WebP file buffer.
+/// Returns `Ok(None)` if no XMP chunk is present or the file is a simple format.
+pub(crate) fn
+read_xmp_from_buffer
+(
+    file_buffer: &Vec<u8>
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    let (mut cursor, parse_webp_result) = match check_xmp_in_file(file_buffer)
+    {
+        Ok(result) => result,
+        Err(e) => {
+            match e.to_string().as_str()
+            {
+                "No XMP chunk according to VP8X flags!"
+                | "Expected first chunk of WebP file to be of type 'VP8X' but instead got VP8L!"
+                | "Expected first chunk of WebP file to be of type 'VP8X' but instead got VP8 !"
+                    => return Ok(None),
+                _ => return Err(e),
+            }
+        }
+    };
+
+    cursor.set_position(12u64);
+    let mut header_buffer = vec![0u8; 4usize];
+    let mut chunk_index   = 0usize;
+
+    loop
+    {
+        if cursor.read(&mut header_buffer)? != 4
+        {
+            return Ok(None);
+        }
+        let chunk_type = String::from_u8_vec(&header_buffer.to_vec(), &Endian::Little);
+
+        let Some(chunk_at_index) = parse_webp_result.get(chunk_index) else
+        {
+            return Ok(None);
+        };
+
+        let chunk_size = chunk_at_index.len();
+        cursor.seek(std::io::SeekFrom::Current(4))?; // skip size field
+
+        if chunk_type.to_lowercase() == XMP_CHUNK_HEADER.to_lowercase()
+        {
+            let mut payload_buffer = vec![0u8; chunk_size];
+            let bytes_read         = cursor.read(&mut payload_buffer)?;
+            if bytes_read != chunk_size
+            {
+                return io_error!(Other, "Could not read entire XMP chunk data!");
+            }
+            return Ok(Some(XmpData::from_raw(payload_buffer)));
+        }
+        else
+        {
+            cursor.seek(std::io::SeekFrom::Current(chunk_size as i64))?;
+            cursor.seek(std::io::SeekFrom::Current(chunk_size as i64 % 2))?;
+        }
+
+        chunk_index += 1;
+    }
+}
+
+
+
+/// Removes any existing XMP chunk and clears the XMP flag in VP8X.
+pub(crate) fn
+clear_xmp
+(
+    file_buffer: &mut Vec<u8>
+)
+-> Result<(), std::io::Error>
+{
+    let (_, parse_webp_result) = match check_xmp_in_file(file_buffer)
+    {
+        Ok(result) => result,
+        Err(e) => {
+            match e.to_string().as_str()
+            {
+                "No XMP chunk according to VP8X flags!"
+                | "Expected first chunk of WebP file to be of type 'VP8X' but instead got VP8L!"
+                | "Expected first chunk of WebP file to be of type 'VP8X' but instead got VP8 !"
+                    => return Ok(()),
+                _ => return Err(e),
+            }
+        }
+    };
+
+    let mut cursor = Cursor::new(file_buffer);
+    let mut delta  = 0i32;
+
+    cursor.set_position(4);
+
+    for parsed_chunk in parse_webp_result
+    {
+        let parsed_chunk_byte_count =
+            4u64
+            + 4u64
+            + parsed_chunk.len() as u64
+            + parsed_chunk.len() as u64 % 2;
+
+        if parsed_chunk.header().to_lowercase() != XMP_CHUNK_HEADER.to_lowercase()
+        {
+            cursor.seek(std::io::SeekFrom::Current(parsed_chunk_byte_count as i64))?;
+            continue;
+        }
+
+        let remove_start = cursor.position() as usize;
+        let remove_end   = remove_start + parsed_chunk_byte_count as usize;
+        range_remove(cursor.get_mut(), remove_start, remove_end);
+
+        delta -= parsed_chunk_byte_count as i32;
+    }
+
+    update_file_size_information(&mut cursor, delta)?;
+    set_xmp_flag(&mut cursor, false)?;
+
+    Ok(())
+}
+
+
+
 pub(crate) fn
 clear_metadata
 (
@@ -586,10 +795,10 @@ clear_metadata
 
 
 
-/// Writes the given generally encoded metadata to the WebP image file at 
-/// the specified path. 
-/// Note that *all* previously stored EXIF metadata gets removed first before
-/// writing the "new" metadata. 
+/// Writes the given generally encoded metadata to the WebP image file at
+/// the specified path.
+/// Note that *all* previously stored EXIF/XMP metadata gets removed first before
+/// writing the "new" metadata.
 pub(crate) fn
 write_metadata
 (
@@ -598,82 +807,93 @@ write_metadata
 )
 -> Result<(), std::io::Error>
 {
-    // Clear the metadata from the file and return if this results in an error
+    // Clear existing EXIF
     clear_metadata(file_buffer)?;
+
+    // Clear existing XMP (if any)
+    clear_xmp(file_buffer)?;
 
     // Encode the general metadata format to WebP specifications
     let mut encoded_metadata = encode_metadata_webp(&metadata.encode()?);
     let encoded_metadata_len = encoded_metadata.len() as i32;
 
-    // Find a location where to put the EXIF chunk
-    // This is done by requesting a chunk descriptor as long as we find a chunk
-    // that is both known and should be located *before* the EXIF chunk
-    let pre_exif_chunks = [
-        "VP8X",
-        "VP8",
-        "VP8L",
-        "ICCP",
-        "ANIM"
-    ];
+    // Find a location where to put the EXIF chunk (after VP8X, VP8/VP8L, ICCP, ANIM)
+    let pre_exif_chunks = ["VP8X", "VP8", "VP8L", "ICCP", "ANIM"];
 
-    // Clippy wrongly needs this allowance, otherwise it states that this call
-    // to as_ref does nothing. However, it *does* something, mainly 
-    // creating an immutable reference that gets passed as a copy to the
-    // constructor of the cursor, so file_buffer is later on still available
-    // when calling insert_multiple_at.
-    // I guess there is a less messy solution to this?
     #[allow(clippy::useless_asref)]
     let mut read_cursor = Cursor::new(file_buffer.as_ref());
 
     loop
     {
-        // Request a chunk descriptor. If this fails, check the error 
-        // Depending on its type, either continue normally or return it
         let chunk_descriptor_result = get_next_chunk_descriptor(&mut read_cursor);
 
         match chunk_descriptor_result
         {
             Ok(chunk_descriptor) => {
-                let mut chunk_type_found_in_pre_exif_chunks = false;
-
-                // Check header of chunk descriptor against any of the known chunks
-                // that should come before the EXIF chunk
-                for pre_exif_chunk in &pre_exif_chunks
-                {
-                    chunk_type_found_in_pre_exif_chunks |= pre_exif_chunk.to_lowercase() == chunk_descriptor.header().to_lowercase();
-                }
-
-                if !chunk_type_found_in_pre_exif_chunks
-                {
-                    break;
-                }
+                let found = pre_exif_chunks.iter().any(|c|
+                    c.to_lowercase() == chunk_descriptor.header().to_lowercase()
+                );
+                if !found { break; }
             },
             Err(e) => {
                 match e.kind()
                 {
-                    std::io::ErrorKind::UnexpectedEof
-                        => break, // No further chunks, place EXIF chunk here
-                    _
-                        => return Err(e)
+                    std::io::ErrorKind::UnexpectedEof => break,
+                    _ => return Err(e)
                 }
             }
         }
     }
 
-    // Write the EXIF chunk at the found location
-    insert_multiple_at(file_buffer, read_cursor.position() as usize, &mut encoded_metadata);
+    let exif_insert_pos = read_cursor.position() as usize;
+    insert_multiple_at(file_buffer, exif_insert_pos, &mut encoded_metadata);
 
-    // Update the file size information by adding the byte count of the EXIF chunk
-    // (Note: Due to  the WebP specific encoding function, this vector already
-    // contains the EXIF header characters and size information, as well as the
-    // possible padding byte. Therefore, simply taking the length of this
-    // vector takes their byte count also into account and no further values
-    // need to be added)
-    let mut write_cursor = Cursor::new(file_buffer);
-    update_file_size_information(&mut write_cursor, encoded_metadata_len)?;
+    {
+        let mut write_cursor = Cursor::new(&mut *file_buffer);
+        update_file_size_information(&mut write_cursor, encoded_metadata_len)?;
+        set_exif_flag(&mut write_cursor, true)?;
+    }
 
-    // Finally, set the EXIF flag
-    set_exif_flag(&mut write_cursor, true)?;
+    // Write XMP if present
+    if let Some(xmp_data) = metadata.get_xmp()
+    {
+        let mut encoded_xmp = encode_metadata_webp_xmp(xmp_data);
+        let encoded_xmp_len = encoded_xmp.len() as i32;
+
+        // Find insert position for XMP (after EXIF chunk)
+        let pre_xmp_chunks = ["VP8X", "VP8", "VP8L", "ICCP", "ANIM", "EXIF"];
+
+        #[allow(clippy::useless_asref)]
+        let mut read_cursor_xmp = Cursor::new(file_buffer.as_ref());
+
+        loop
+        {
+            let result = get_next_chunk_descriptor(&mut read_cursor_xmp);
+            match result
+            {
+                Ok(chunk_descriptor) => {
+                    let found = pre_xmp_chunks.iter().any(|c|
+                        c.to_lowercase() == chunk_descriptor.header().to_lowercase()
+                    );
+                    if !found { break; }
+                },
+                Err(e) => {
+                    match e.kind()
+                    {
+                        std::io::ErrorKind::UnexpectedEof => break,
+                        _ => return Err(e)
+                    }
+                }
+            }
+        }
+
+        let xmp_insert_pos = read_cursor_xmp.position() as usize;
+        insert_multiple_at(file_buffer, xmp_insert_pos, &mut encoded_xmp);
+
+        let mut write_cursor_xmp = Cursor::new(&mut *file_buffer);
+        update_file_size_information(&mut write_cursor_xmp, encoded_xmp_len)?;
+        set_xmp_flag(&mut write_cursor_xmp, true)?;
+    }
 
     return Ok(());
 }

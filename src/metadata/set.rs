@@ -4,6 +4,7 @@
 use crate::exif_tag::ExifTag;
 use crate::ifd::ExifTagGroup;
 use crate::iptc::IptcData;
+use crate::xmp::XmpData;
 use super::Metadata;
 
 impl
@@ -28,6 +29,27 @@ Metadata
 	)
 	{
 		self.iptc_data = None;
+	}
+
+	/// Sets the XMP data in the metadata struct, replacing any existing data.
+	pub fn
+	set_xmp
+	(
+		&mut self,
+		xmp: XmpData
+	)
+	{
+		self.xmp_data = Some(xmp);
+	}
+
+	/// Clears any XMP data stored in the metadata struct.
+	pub fn
+	clear_xmp
+	(
+		&mut self
+	)
+	{
+		self.xmp_data = None;
 	}
 
 	/// Sets the tag in the metadata struct. Tries to determine what IFD the 

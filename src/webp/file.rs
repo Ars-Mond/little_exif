@@ -12,6 +12,7 @@ use crate::endian::*;
 use crate::metadata::Metadata;
 use crate::u8conversion::*;
 use crate::general_file_io::*;
+use crate::xmp::XmpData;
 use super::riff_chunk::RiffChunk;
 use super::riff_chunk::RiffChunkDescriptor;
 use super::*;
@@ -646,10 +647,22 @@ clear_metadata
 
 
 
-/// Writes the given generally encoded metadata to the WebP image file at 
-/// the specified path. 
-/// Note that *all* previously stored EXIF metadata gets removed first before
-/// writing the "new" metadata. 
+/// Reads XMP data from the WebP file at the given path.
+/// Returns `Ok(None)` if no XMP chunk is present.
+pub(crate) fn
+read_xmp
+(
+    path: &Path
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    let file_buffer = std::fs::read(path)?;
+    super::vec::read_xmp_from_buffer(&file_buffer)
+}
+
+/// Writes the given generally encoded metadata to the WebP image file at
+/// the specified path. Loads the file into memory, delegates to the
+/// buffer-based write function, and writes back the result.
 pub(crate) fn
 write_metadata
 (
@@ -658,83 +671,14 @@ write_metadata
 )
 -> Result<(), std::io::Error>
 {
-    // Clear the metadata from the file and return if this results in an error
-    clear_metadata(path)?;
+    let mut file_buffer = std::fs::read(path)?;
+    super::vec::write_metadata(&mut file_buffer, metadata)?;
 
-    // Encode the general metadata format to WebP specifications
-    let encoded_metadata = encode_metadata_webp(&metadata.encode()?);
-
-    // Open the file...
-    let mut file = check_signature(path)?;
-
-    // ...and find a location where to put the EXIF chunk
-    // This is done by requesting a chunk descriptor as long as we find a chunk
-    // that is both known and should be located *before* the EXIF chunk
-    let pre_exif_chunks = [
-        "VP8X",
-        "VP8",
-        "VP8L",
-        "ICCP",
-        "ANIM"
-    ];
-
-    loop
-    {
-        // Request a chunk descriptor. If this fails, check the error 
-        // Depending on its type, either continue normally or return it
-        let chunk_descriptor_result = get_next_chunk_descriptor(&mut file);
-
-        match chunk_descriptor_result
-        {
-            Ok(chunk_descriptor) => {
-                let mut chunk_type_found_in_pre_exif_chunks = false;
-
-                // Check header of chunk descriptor against any of the known chunks
-                // that should come before the EXIF chunk
-                for pre_exif_chunk in &pre_exif_chunks
-                {
-                    chunk_type_found_in_pre_exif_chunks |= pre_exif_chunk.to_lowercase() == chunk_descriptor.header().to_lowercase();
-                }
-
-                if !chunk_type_found_in_pre_exif_chunks
-                {
-                    break;
-                }
-            },
-            Err(e) => {
-                match e.kind()
-                {
-                    std::io::ErrorKind::UnexpectedEof
-                        => break, // No further chunks, place EXIF chunk here
-                    _
-                        => return Err(e)
-                }
-            }
-        }
-    }
-
-    // Next, read remaining file into a buffer...
-    let current_file_cursor = SeekFrom::Start(file.stream_position()?);
-    let mut read_buffer = Vec::new();
-    file.read_to_end(&mut read_buffer)?;
-
-    // ...and write the EXIF chunk at the previously found location...
-    file.seek(current_file_cursor)?;
-    file.write_all(&encoded_metadata)?;
-
-    // ...and writing back the remaining file content
-    file.write_all(&read_buffer)?;
-
-    // Update the file size information by adding the byte count of the EXIF chunk
-    // (Note: Due to  the WebP specific encoding function, this vector already
-    // contains the EXIF header characters and size information, as well as the
-    // possible padding byte. Therefore, simply taking the length of this
-    // vector takes their byte count also into account and no further values
-    // need to be added)
-    update_file_size_information(&mut file, encoded_metadata.len() as i32)?;
-
-    // Finally, set the EXIF flag
-    set_exif_flag(path, true)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    file.write_all(&file_buffer)?;
 
     return Ok(());
 }

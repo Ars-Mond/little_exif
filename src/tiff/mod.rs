@@ -11,6 +11,7 @@ use crate::ifd::ExifTagGroup::*;
 use crate::io_error;
 use crate::iptc::IptcData;
 use crate::metadata::Metadata;
+use crate::xmp::XmpData;
 
 pub mod file;
 pub mod vec;
@@ -37,6 +38,28 @@ extract_iptc_from_metadata
     metadata.get_ifd_mut(ExifTagGroup::GENERIC, 0).remove_tag(0x83BB);
 
     IptcData::decode(&raw_bytes).ok()
+}
+
+/// Extracts XMP data from a TIFF `Metadata` struct by looking for tag 0x02BC
+/// (XMLPacket) in IFD0. If found, the raw bytes are wrapped as XmpData and
+/// the tag is removed from the IFD to avoid double-encoding on next write.
+pub(crate) fn
+extract_xmp_from_metadata
+(
+    metadata: &mut Metadata
+)
+-> Option<XmpData>
+{
+    let endian = metadata.get_endian();
+
+    let raw_bytes = metadata
+        .get_tag_by_hex(0x02BC, Some(ExifTagGroup::GENERIC))
+        .next()
+        .map(|tag| tag.value_as_u8_vec(&endian))?;
+
+    metadata.get_ifd_mut(ExifTagGroup::GENERIC, 0).remove_tag(0x02BC);
+
+    Some(XmpData::from_raw(raw_bytes))
 }
 
 pub(crate) fn

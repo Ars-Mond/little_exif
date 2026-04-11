@@ -54,13 +54,20 @@ write_metadata
 {
 	let mut cursor = Cursor::new(file_buffer);
 
-	// If IPTC data is present, inject it as tag 0x83BB before encoding
-	if let Some(iptc_data) = metadata.get_iptc()
+	// If IPTC or XMP data is present, inject them as TIFF tags before encoding
+	if metadata.get_iptc().is_some() || metadata.get_xmp().is_some()
 	{
-		let raw_iptc = iptc_data.encode();
-		let mut m    = metadata.clone();
-		m.get_ifd_mut(ExifTagGroup::GENERIC, 0)
-			.set_tag(ExifTag::UnknownUNDEF(raw_iptc, 0x83BB, ExifTagGroup::GENERIC));
+		let mut m = metadata.clone();
+		if let Some(raw) = metadata.get_iptc().map(|d| d.encode())
+		{
+			m.get_ifd_mut(ExifTagGroup::GENERIC, 0)
+				.set_tag(ExifTag::UnknownUNDEF(raw, 0x83BB, ExifTagGroup::GENERIC));
+		}
+		if let Some(raw) = metadata.get_xmp().map(|d| d.as_bytes().to_vec())
+		{
+			m.get_ifd_mut(ExifTagGroup::GENERIC, 0)
+				.set_tag(ExifTag::UnknownUNDEF(raw, 0x02BC, ExifTagGroup::GENERIC));
+		}
 		return generic_write_metadata(&mut cursor, &m);
 	}
 

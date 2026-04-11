@@ -18,6 +18,7 @@ use crate::general_file_io::EXIF_HEADER;
 use crate::ifd::ExifTagGroup;
 use crate::ifd::ImageFileDirectory;
 use crate::iptc::IptcData;
+use crate::xmp::XmpData;
 use crate::u8conversion::from_u8_vec_res_macro;
 use crate::u8conversion::U8conversion;
 
@@ -28,6 +29,7 @@ Metadata
     endian:                 Endian,
     image_file_directories: Vec<ImageFileDirectory>,
     iptc_data:              Option<IptcData>,
+    xmp_data:               Option<XmpData>,
 }
 
 impl
@@ -49,7 +51,7 @@ Metadata
     ()
     -> Metadata
     {
-        Metadata { endian: Endian::Little, image_file_directories: Vec::new(), iptc_data: None }
+        Metadata { endian: Endian::Little, image_file_directories: Vec::new(), iptc_data: None, xmp_data: None }
     }
 
     /// Creates an IFD in this struct if it does not exist yet.
@@ -93,7 +95,7 @@ Metadata
             let     decoding_result   = Self::decode(&mut pre_decode_cursor);
             if let Ok((endian, image_file_directories)) = decoding_result
             {
-                let mut data = Metadata { endian, image_file_directories, iptc_data: None };
+                let mut data = Metadata { endian, image_file_directories, iptc_data: None, xmp_data: None };
                 data.sort_data();
                 return Ok(data);
             }

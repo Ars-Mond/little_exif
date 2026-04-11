@@ -109,6 +109,46 @@ Metadata
             _ => {}
         }
 
+        // Read XMP data separately (format-specific extraction)
+        match file_type
+        {
+            FileExtension::JPEG =>
+            {
+                match jpg::read_xmp_from_buffer(file_buffer)
+                {
+                    Ok(Some(xmp)) => metadata.set_xmp(xmp),
+                    Ok(None)      => {},
+                    Err(e)        => log::warn!("Could not read XMP from JPEG: {e}"),
+                }
+            }
+            FileExtension::PNG { .. } =>
+            {
+                match png::read_xmp_from_buffer(file_buffer)
+                {
+                    Ok(Some(xmp)) => metadata.set_xmp(xmp),
+                    Ok(None)      => {},
+                    Err(e)        => log::warn!("Could not read XMP from PNG: {e}"),
+                }
+            }
+            FileExtension::TIFF =>
+            {
+                if let Some(xmp) = tiff::extract_xmp_from_metadata(&mut metadata)
+                {
+                    metadata.set_xmp(xmp);
+                }
+            }
+            FileExtension::WEBP =>
+            {
+                match webp::vec::read_xmp_from_buffer(file_buffer)
+                {
+                    Ok(Some(xmp)) => metadata.set_xmp(xmp),
+                    Ok(None)      => {},
+                    Err(e)        => log::warn!("Could not read XMP from WebP: {e}"),
+                }
+            }
+            _ => {}
+        }
+
         return Ok(metadata);
     }
 
@@ -223,6 +263,46 @@ Metadata
                 if let Some(iptc) = tiff::extract_iptc_from_metadata(&mut metadata)
                 {
                     metadata.set_iptc(iptc);
+                }
+            }
+            _ => {}
+        }
+
+        // Read XMP data separately (format-specific extraction)
+        match file_type
+        {
+            FileExtension::JPEG =>
+            {
+                match jpg::file_read_xmp(path)
+                {
+                    Ok(Some(xmp)) => metadata.set_xmp(xmp),
+                    Ok(None)      => {},
+                    Err(e)        => log::warn!("Could not read XMP from JPEG: {e}"),
+                }
+            }
+            FileExtension::PNG { .. } =>
+            {
+                match png::file_read_xmp(path)
+                {
+                    Ok(Some(xmp)) => metadata.set_xmp(xmp),
+                    Ok(None)      => {},
+                    Err(e)        => log::warn!("Could not read XMP from PNG: {e}"),
+                }
+            }
+            FileExtension::TIFF =>
+            {
+                if let Some(xmp) = tiff::extract_xmp_from_metadata(&mut metadata)
+                {
+                    metadata.set_xmp(xmp);
+                }
+            }
+            FileExtension::WEBP =>
+            {
+                match webp::file::read_xmp(path)
+                {
+                    Ok(Some(xmp)) => metadata.set_xmp(xmp),
+                    Ok(None)      => {},
+                    Err(e)        => log::warn!("Could not read XMP from WebP: {e}"),
                 }
             }
             _ => {}
@@ -479,6 +559,22 @@ Metadata
             }
         }
 
+        // XMP write is only supported for JPEG, PNG, TIFF, and WebP
+        if self.get_xmp().is_some()
+        {
+            match file_type
+            {
+                FileExtension::JPEG
+                | FileExtension::PNG { .. }
+                | FileExtension::TIFF
+                | FileExtension::WEBP => {},
+                _ => return io_error!(
+                    Other,
+                    format!("XMP write not supported for {:?}", file_type)
+                ),
+            }
+        }
+
         match file_type
         {
             FileExtension::HEIF
@@ -529,6 +625,22 @@ Metadata
                 _ => return io_error!(
                     Other,
                     format!("IPTC write not supported for {:?}", file_type)
+                ),
+            }
+        }
+
+        // XMP write is only supported for JPEG, PNG, TIFF, and WebP
+        if self.get_xmp().is_some()
+        {
+            match file_type
+            {
+                FileExtension::JPEG
+                | FileExtension::PNG { .. }
+                | FileExtension::TIFF
+                | FileExtension::WEBP => {},
+                _ => return io_error!(
+                    Other,
+                    format!("XMP write not supported for {:?}", file_type)
                 ),
             }
         }

@@ -38,6 +38,7 @@ use crate::png::read::read_chunk_crc;
 use crate::png::text::get_keyword_from_text_chunk;
 
 use crate::xmp::remove_exif_from_xmp;
+use crate::xmp::XmpData;
 use crate::util::range_remove;
 
 pub(crate) const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -116,6 +117,158 @@ file_check_signature
 
 
 
+
+/// Reads XMP data from an iTXt chunk with keyword "XML:com.adobe.xmp".
+fn
+generic_read_xmp
+<T: Seek + Read>
+(
+    cursor:     &mut T,
+    parsed_png: &Vec<PngChunk>
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    for chunk in parsed_png
+    {
+        match chunk.as_string().as_str()
+        {
+            "iTXt" => {
+                // Skip chunk length (4 bytes) then read chunk name (4 bytes)
+                cursor.seek(SeekFrom::Current(4))?;
+                let chunk_name = read_chunk_name(cursor)?;
+                let chunk_data = read_chunk_data(cursor, chunk.length() as usize)?;
+
+                let keyword    = get_keyword_from_text_chunk(&chunk_data);
+                let has_xmp_kw = keyword.len() == XML_COM_ADOBE_XMP.len()
+                    && keyword.bytes().zip(XML_COM_ADOBE_XMP.iter()).all(|(a, b)| a == *b);
+
+                if has_xmp_kw
+                {
+                    let xmp_bytes = get_data_from_text_chunk(chunk_name.as_str(), &chunk_data)?;
+                    return Ok(Some(XmpData::from_raw(xmp_bytes)));
+                }
+
+                // Not XMP — skip CRC and continue
+                cursor.seek(SeekFrom::Current(4))?;
+            }
+
+            _ => {
+                cursor.seek(SeekFrom::Current(chunk.length() as i64 + 12))?;
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Reads XMP data from a PNG file buffer.
+pub(crate) fn
+read_xmp_from_buffer
+(
+    file_buffer: &Vec<u8>
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    let parse_png_result = vec_parse_png(file_buffer)?;
+    let mut cursor = check_signature(file_buffer)?;
+    generic_read_xmp(&mut cursor, &parse_png_result)
+}
+
+/// Reads XMP data from a PNG file at the given path.
+pub(crate) fn
+file_read_xmp
+(
+    path: &Path
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    let parse_png_result = file_parse_png(path)?;
+    let mut file = file_check_signature(path)?;
+    generic_read_xmp(&mut file, &parse_png_result)
+}
+
+/// Removes any iTXt chunk with keyword "XML:com.adobe.xmp" from the PNG buffer.
+fn
+clear_xmp_from_png_buffer
+(
+    file_buffer: &mut Vec<u8>
+)
+-> Result<(), std::io::Error>
+{
+    let parse_png_result = vec_parse_png(file_buffer)?;
+    let mut cursor       = Cursor::new(file_buffer);
+
+    cursor.seek(SeekFrom::Current(8))?; // skip PNG signature
+
+    for chunk in &parse_png_result
+    {
+        let remove_start = cursor.stream_position()? as usize;
+
+        match chunk.as_string().as_str()
+        {
+            "iTXt" => {
+                cursor.seek(SeekFrom::Current(4 + 4))?; // skip length + type
+                let chunk_data = read_chunk_data(&mut cursor, chunk.length() as usize)?;
+                let keyword    = get_keyword_from_text_chunk(&chunk_data);
+
+                let has_xmp_kw = keyword.len() == XML_COM_ADOBE_XMP.len()
+                    && keyword.bytes().zip(XML_COM_ADOBE_XMP.iter()).all(|(a, b)| a == *b);
+
+                if has_xmp_kw
+                {
+                    cursor.set_position(remove_start as u64);
+                    remove_chunk_at(&mut cursor)?;
+                    continue;
+                }
+
+                cursor.seek(SeekFrom::Current(4))?; // skip CRC
+            }
+
+            _ => {
+                cursor.seek(SeekFrom::Current(12 + chunk.length() as i64))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Builds the data field for an uncompressed iTXt chunk containing XMP.
+fn
+build_xmp_itxt_chunk_data
+(
+    xmp_data: &XmpData
+)
+-> Vec<u8>
+{
+    let mut data = Vec::new();
+    data.extend_from_slice(&XML_COM_ADOBE_XMP); // "XML:com.adobe.xmp" (17 bytes)
+    data.push(0x00);                             // null separator
+    data.push(0x00);                             // compression_flag = 0 (no compression)
+    data.push(0x00);                             // compression_method = 0
+    data.push(0x00);                             // language_tag = "" + NUL
+    data.push(0x00);                             // translated_keyword = "" + NUL
+    data.extend_from_slice(xmp_data.as_bytes());
+    data
+}
+
+/// Inserts an iTXt XMP chunk immediately after the IHDR chunk.
+fn
+write_xmp_itxt_after_ihdr
+<T: Seek + Read + Write>
+(
+    cursor:   &mut T,
+    xmp_data: &XmpData
+)
+-> Result<(), std::io::Error>
+{
+    cursor.seek(SeekFrom::Start(8))?; // seek to start of IHDR chunk
+    let ihdr_length = read_chunk_length(cursor)?;
+    // Skip: PNG signature (8) + IHDR length (4) + IHDR type (4) + IHDR data + IHDR CRC (4)
+    let seek_start = 8u64 + 4u64 + 4u64 + ihdr_length as u64 + 4u64;
+    cursor.seek(SeekFrom::Start(seek_start))?;
+    write_chunk(cursor, "iTXt", &build_xmp_itxt_chunk_data(xmp_data))
+}
 
 /// "Parses" the PNG by checking various properties:
 /// - Can the file be opened and is the signature valid?
@@ -561,16 +714,27 @@ write_metadata
 )
 -> Result<(), std::io::Error>
 {
-    // First clear the existing metadata
-    // This also parses the PNG and checks its validity, so it is safe to
-    // assume that is, in fact, a usable PNG file
+    // Clear existing EXIF metadata (also strips exif: from any XMP iTXt chunk)
     clear_metadata(file_buffer)?;
 
-    // Parsed PNG is Ok to use - Create a cursor for writing
-    let mut cursor = Cursor::new(file_buffer);
+    // Write new EXIF zTXt chunk after IHDR
+    {
+        let mut cursor = Cursor::new(&mut *file_buffer);
+        generic_write_metadata(&mut cursor, metadata)?;
+    }
 
-    // Call the generic write function
-    return generic_write_metadata(&mut cursor, metadata);
+    // If XMP data is present, remove old XMP iTXt and write new one
+    if let Some(xmp_data) = metadata.get_xmp()
+    {
+        // Remove old XMP iTXt entirely (may have been modified by clear_metadata)
+        clear_xmp_from_png_buffer(file_buffer)?;
+
+        // Insert fresh XMP iTXt after IHDR
+        let mut cursor = Cursor::new(file_buffer);
+        write_xmp_itxt_after_ihdr(&mut cursor, xmp_data)?;
+    }
+
+    return Ok(());
 }
 
 pub(crate) fn

@@ -47,7 +47,7 @@ mod jpg;
 mod jxl;
 mod tiff;
 mod webp;
-mod xmp;
+pub mod xmp;
 mod util;
 
 pub mod endian;
