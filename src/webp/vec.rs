@@ -166,7 +166,7 @@ parse_webp
             // This is the case when the read of the next chunk descriptor 
             // fails due to not being able to fetch 8 bytes for the header and
             // chunk size information, indicating that there is no further data
-            // in the file and we are done with parsing.
+            // in the file, and we are done with parsing.
             // If the subroutine fails due to other reasons, the error gets
             // propagated further.
             if let Err(e) = next_chunk_descriptor_result

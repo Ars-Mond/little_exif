@@ -592,8 +592,10 @@ clear_metadata
     // Compute a delta of how much the file size information has to change
     let mut delta = 0i32;
 
-    // Skip the WEBP signature
-    file.seek(std::io::SeekFrom::Current(4i64))?;
+    // Seek to the start of the first chunk (past RIFF + file size + "WEBP").
+    // check_exif_in_file leaves the cursor at offset 24; we must not rely on
+    // its final position.
+    file.seek(std::io::SeekFrom::Start(12u64))?;
 
     for parsed_chunk in parse_webp_result
     {
