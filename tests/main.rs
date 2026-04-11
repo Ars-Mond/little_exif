@@ -548,9 +548,59 @@ write_to_file_webp_simple_lossless()
 	Ok(())
 }
 
+/// Tests that VP8L → VP8X conversion preserves correct canvas dimensions
+/// for non-square images. The VP8X chunk stores (width-1, height-1) as
+/// 24-bit LE values at offsets 24..27 and 27..30.
+/// Uses a 1000×500 simple lossless (VP8L) file to catch width/height swaps.
+#[test]
+fn
+write_to_file_webp_simple_lossless_vp8l_dimensions()
+-> Result<(), std::io::Error>
+{
+	let copy_path = "tests/sample_1000x500_simple_lossless_copy.webp";
+
+	if let Err(error) = remove_file(copy_path)
+	{
+		println!("{}", error);
+	}
+	copy(
+		"tests/sample_1000x500_simple_lossless.webp",
+		copy_path
+	)?;
+
+	// Write EXIF metadata — triggers VP8L → VP8X conversion
+	let metadata = get_test_metadata()?;
+	metadata.write_to_file(Path::new(copy_path))?;
+
+	// Read back the file and verify VP8X dimensions
+	let data = read(copy_path)?;
+
+	// First chunk must now be VP8X
+	let first_chunk = String::from_utf8(data[12..16].to_vec())
+		.expect("VP8X chunk name");
+	assert_eq!(first_chunk, "VP8X", "Expected VP8X chunk after conversion");
+
+	// VP8X canvas dimensions are stored as 24-bit LE at offsets 24..27 (width-1)
+	// and 27..30 (height-1) within the file
+	let vp8x_width_minus_1  = data[24] as u32
+		| (data[25] as u32) << 8
+		| (data[26] as u32) << 16;
+	let vp8x_height_minus_1 = data[27] as u32
+		| (data[28] as u32) << 8
+		| (data[29] as u32) << 16;
+
+	let width  = vp8x_width_minus_1  + 1;
+	let height = vp8x_height_minus_1 + 1;
+
+	assert_eq!(width,  1000, "VP8X canvas width should be 1000");
+	assert_eq!(height,  500, "VP8X canvas height should be 500");
+
+	Ok(())
+}
+
 
 #[test]
-fn 
+fn
 write_to_file_webp_extended() 
 -> Result<(), std::io::Error>
 {
