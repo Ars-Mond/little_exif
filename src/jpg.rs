@@ -12,6 +12,7 @@ use std::path::Path;
 
 use crate::endian::Endian;
 use crate::iptc::IptcData;
+use crate::io_error_plain;
 use crate::metadata::Metadata;
 use crate::u8conversion::*;
 use crate::general_file_io::*;
@@ -33,23 +34,24 @@ encode_metadata_jpg
 (
     exif_vec: &[u8],
 )
--> Vec<u8>
+-> Result<Vec<u8>, std::io::Error>
 {
-    // vector storing the data that will be returned
+    // Compute the length of the segment (includes the two bytes of the
+    // length field itself). Overflow check: u16::MAX = 65535.
+    let length = 2usize
+        .checked_add(EXIF_HEADER.len())
+        .and_then(|n| n.checked_add(exif_vec.len()))
+        .filter(|&n| n <= u16::MAX as usize)
+        .ok_or_else(|| io_error_plain!(Other, "EXIF data too large for a JPEG APP1 segment (max 65527 bytes)"))?
+        as u16;
+
     let mut jpg_exif: Vec<u8> = Vec::new();
-
-    // Compute the length of the exif data (includes the two bytes of the
-    // actual length field)
-    let length = 2u16 + (EXIF_HEADER.len() as u16) + (exif_vec.len() as u16);
-
-    // Start with the APP1 marker and the length of the data
-    // Then copy the previously encoded EXIF data 
     jpg_exif.extend(to_u8_vec_macro!(u16, &JPG_APP1_MARKER, &Endian::Big));
     jpg_exif.extend(to_u8_vec_macro!(u16, &length, &Endian::Big));
     jpg_exif.extend(EXIF_HEADER.iter());
     jpg_exif.extend(exif_vec.iter());
 
-    return jpg_exif;
+    return Ok(jpg_exif);
 }
 
 
@@ -423,18 +425,21 @@ encode_xmp_app1
 (
     xmp_data: &XmpData,
 )
--> Vec<u8>
+-> Result<Vec<u8>, std::io::Error>
 {
     let payload = xmp_data.as_bytes();
-    let seg_len = 2u16
-        + XMP_NAMESPACE_URI.len() as u16
-        + payload.len() as u16;
+    let seg_len = 2usize
+        .checked_add(XMP_NAMESPACE_URI.len())
+        .and_then(|n| n.checked_add(payload.len()))
+        .filter(|&n| n <= u16::MAX as usize)
+        .ok_or_else(|| io_error_plain!(Other, "XMP data too large for a JPEG APP1 segment (max 65504 bytes)"))?
+        as u16;
     let mut out = Vec::new();
     out.extend(to_u8_vec_macro!(u16, &JPG_APP1_MARKER, &Endian::Big));
-    out.extend(to_u8_vec_macro!(u16, &seg_len,          &Endian::Big));
+    out.extend(to_u8_vec_macro!(u16, &seg_len, &Endian::Big));
     out.extend_from_slice(XMP_NAMESPACE_URI);
     out.extend_from_slice(payload);
-    out
+    Ok(out)
 }
 
 /// Parses 8BIM blocks from Photoshop APP13 data and returns IPTC content
@@ -624,17 +629,22 @@ encode_iptc_app13
 (
     iptc_data: &IptcData
 )
--> Vec<u8>
+-> Result<Vec<u8>, std::io::Error>
 {
-    let raw_iptc  = iptc_data.encode();
-    let res_len   = raw_iptc.len() as u32;
-    let seg_len   = 2u16                            // length field itself
-        + PHOTOSHOP_HEADER.len()   as u16           // "Photoshop 3.0\0"
-        + BIMM_MARKER.len()        as u16           // "8BIM"
-        + IPTC_RESOURCE_TYPE.len() as u16           // 0x04 0x04
-        + 2                                         // empty pascal string
-        + 4                                         // u32 resource data length
-        + raw_iptc.len()           as u16;          // IPTC payload
+    let raw_iptc = iptc_data.encode();
+    let res_len  = raw_iptc.len() as u32;
+    // Fixed overhead: 2 (length field) + 14 ("Photoshop 3.0\0") + 4 ("8BIM")
+    //   + 2 (resource type) + 2 (pascal string) + 4 (u32 data length) = 28
+    let seg_len  = 2usize
+        .checked_add(PHOTOSHOP_HEADER.len())
+        .and_then(|n| n.checked_add(BIMM_MARKER.len()))
+        .and_then(|n| n.checked_add(IPTC_RESOURCE_TYPE.len()))
+        .and_then(|n| n.checked_add(2))   // empty pascal string
+        .and_then(|n| n.checked_add(4))   // u32 resource data length
+        .and_then(|n| n.checked_add(raw_iptc.len()))
+        .filter(|&n| n <= u16::MAX as usize)
+        .ok_or_else(|| io_error_plain!(Other, "IPTC data too large for a JPEG APP13 segment (max 65507 bytes)"))?
+        as u16;
 
     let mut out = Vec::new();
     out.extend(to_u8_vec_macro!(u16, &APP13_MARKER, &Endian::Big));
@@ -645,7 +655,7 @@ encode_iptc_app13
     out.extend_from_slice(&[0x00u8, 0x00u8]); // empty pascal string
     out.extend(to_u8_vec_macro!(u32, &res_len, &Endian::Big));
     out.extend_from_slice(&raw_iptc);
-    out
+    Ok(out)
 }
 
 /// Provides the JPEG specific encoding result as vector of bytes to be used
@@ -655,7 +665,7 @@ as_u8_vec
 (
     general_encoded_metadata: &[u8],
 )
--> Vec<u8>
+-> Result<Vec<u8>, std::io::Error>
 {
     encode_metadata_jpg(general_encoded_metadata)
 }
@@ -680,7 +690,7 @@ write_metadata
     clear_segment(file_buffer, 0xe1, Some(XMP_NAMESPACE_URI))?;
 
     // Encode and insert new EXIF (APP1) right after the JPEG signature
-    let mut encoded_metadata = encode_metadata_jpg(&metadata.encode()?);
+    let mut encoded_metadata = encode_metadata_jpg(&metadata.encode()?)?;
     let     exif_size        = encoded_metadata.len();
     crate::util::insert_multiple_at(file_buffer, 2, &mut encoded_metadata);
 
@@ -688,7 +698,7 @@ write_metadata
     let mut iptc_size = 0usize;
     if let Some(iptc_data) = metadata.get_iptc()
     {
-        let mut encoded_iptc = encode_iptc_app13(iptc_data);
+        let mut encoded_iptc = encode_iptc_app13(iptc_data)?;
         iptc_size            = encoded_iptc.len();
         crate::util::insert_multiple_at(file_buffer, 2 + exif_size, &mut encoded_iptc);
     }
@@ -696,7 +706,7 @@ write_metadata
     // Encode and insert new XMP (APP1) right after IPTC (or EXIF if no IPTC)
     if let Some(xmp_data) = metadata.get_xmp()
     {
-        let mut encoded_xmp = encode_xmp_app1(xmp_data);
+        let mut encoded_xmp = encode_xmp_app1(xmp_data)?;
         crate::util::insert_multiple_at(file_buffer, 2 + exif_size + iptc_size, &mut encoded_xmp);
     }
 

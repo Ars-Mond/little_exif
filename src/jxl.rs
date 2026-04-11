@@ -136,6 +136,7 @@ clear_metadata
 
     let mut position = 0;
 
+    // TODO Panic "Index out of bounds panic в clear_metadata" ???
     loop
     {
         if position >= file_buffer.len() { return Ok(()); }
@@ -151,7 +152,7 @@ clear_metadata
         if box_contains_exif(
             &mut Cursor::new(
                 file_buffer[position+8..position+12].to_vec()
-            ), 
+            ),
             [type_buffer[0], type_buffer[1], type_buffer[2], type_buffer[3]]
         )?
         {
