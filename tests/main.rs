@@ -36,8 +36,14 @@ new_from_path_no_data_jxl()
 fn
 new_from_path_no_data_jpg()
 {
-	let data = Metadata::new_from_path(Path::new("tests/no_exif.jpeg"));
-	assert!(data.is_err());
+	// A JPEG without EXIF should not be treated as a hard error: the file may
+	// still carry XMP or IPTC, which the reader pulls in separately. We expect
+	// an Ok value with an empty Metadata struct.
+	let data = Metadata::new_from_path(Path::new("tests/no_exif.jpeg"))
+		.expect("Reading a JPEG without EXIF must succeed");
+	assert!(data.get_ifds().is_empty(), "Unexpected EXIF IFDs");
+	assert!(data.get_iptc().is_none(),  "Unexpected IPTC block");
+	assert!(data.get_xmp().is_none(),   "Unexpected XMP packet");
 }
 
 #[test]

@@ -594,7 +594,12 @@ check_xmp_in_file
 
 
 /// Reads XMP data from a WebP file buffer.
-/// Returns `Ok(None)` if no XMP chunk is present or the file is a simple format.
+///
+/// Returns `Ok(None)` if no XMP chunk is present. For files that are not
+/// in Extended File Format (no VP8X chunk) we still scan the chunk list
+/// for an `XMP ` chunk — some producers (Photoshop, several stock pipelines)
+/// embed XMP next to the VP8/VP8L chunk without converting the file to
+/// the extended format.
 pub(crate) fn
 read_xmp_from_buffer
 (
@@ -608,10 +613,15 @@ read_xmp_from_buffer
         Err(e) => {
             match e.to_string().as_str()
             {
+                // VP8X says "no XMP" — trust it
                 "No XMP chunk according to VP8X flags!"
-                | "Expected first chunk of WebP file to be of type 'VP8X' but instead got VP8L!"
-                | "Expected first chunk of WebP file to be of type 'VP8X' but instead got VP8 !"
                     => return Ok(None),
+
+                // Simple File Format: still scan all chunks for an XMP chunk
+                "Expected first chunk of WebP file to be of type 'VP8X' but instead got VP8L!"
+                | "Expected first chunk of WebP file to be of type 'VP8X' but instead got VP8 !"
+                    => return scan_xmp_in_simple_webp(file_buffer),
+
                 _ => return Err(e),
             }
         }
@@ -655,6 +665,49 @@ read_xmp_from_buffer
 
         chunk_index += 1;
     }
+}
+
+/// Scans every RIFF chunk in a Simple Format WebP file for an `XMP ` chunk.
+/// Used when no VP8X chunk is present but XMP may still have been embedded.
+fn
+scan_xmp_in_simple_webp
+(
+    file_buffer: &Vec<u8>
+)
+-> Result<Option<XmpData>, std::io::Error>
+{
+    let parsed_webp_result = parse_webp(file_buffer)?;
+    let mut cursor         = check_signature(file_buffer)?;
+    cursor.set_position(12u64);
+
+    let mut header_buffer = vec![0u8; 4usize];
+
+    for descriptor in &parsed_webp_result
+    {
+        if cursor.read(&mut header_buffer)? != 4
+        {
+            return Ok(None);
+        }
+        let chunk_type = String::from_u8_vec(&header_buffer.to_vec(), &Endian::Little);
+        let chunk_size = descriptor.len();
+        cursor.seek(std::io::SeekFrom::Current(4))?; // skip size field
+
+        if chunk_type.to_lowercase() == XMP_CHUNK_HEADER.to_lowercase()
+        {
+            let mut payload_buffer = vec![0u8; chunk_size];
+            let bytes_read         = cursor.read(&mut payload_buffer)?;
+            if bytes_read != chunk_size
+            {
+                return io_error!(Other, "Could not read entire XMP chunk data!");
+            }
+            return Ok(Some(XmpData::from_raw(payload_buffer)));
+        }
+
+        cursor.seek(std::io::SeekFrom::Current(chunk_size as i64))?;
+        cursor.seek(std::io::SeekFrom::Current(chunk_size as i64 % 2))?;
+    }
+
+    Ok(None)
 }
 
 

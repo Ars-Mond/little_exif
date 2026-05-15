@@ -85,7 +85,20 @@ Metadata
                 ),
         };
 
-        let mut metadata = Self::general_decoding_wrapper(raw_pre_decode_general)?;
+        // If EXIF is missing or unreadable, continue with an empty Metadata
+        // struct so that XMP/IPTC extraction below can still succeed.
+        let mut metadata = match Self::general_decoding_wrapper(raw_pre_decode_general)
+        {
+            Ok(m)  => m,
+            Err(e) =>
+            {
+                log::warn!(
+                    "Could not decode EXIF from {file_type:?} ({e}); \
+                    continuing with empty Metadata (XMP/IPTC will still be attempted)"
+                );
+                Metadata::new()
+            }
+        };
 
         // Read IPTC data separately (format-specific extraction)
         match file_type
@@ -244,7 +257,20 @@ Metadata
                 ),
         };
 
-        let mut metadata = Self::general_decoding_wrapper(raw_pre_decode_general)?;
+        // If EXIF is missing or unreadable, continue with an empty Metadata
+        // struct so that XMP/IPTC extraction below can still succeed.
+        let mut metadata = match Self::general_decoding_wrapper(raw_pre_decode_general)
+        {
+            Ok(m)  => m,
+            Err(e) =>
+            {
+                log::warn!(
+                    "Could not decode EXIF from {file_type:?} ({e}); \
+                    continuing with empty Metadata (XMP/IPTC will still be attempted)"
+                );
+                Metadata::new()
+            }
+        };
 
         // Read IPTC data separately (format-specific extraction)
         match file_type
